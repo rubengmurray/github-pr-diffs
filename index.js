@@ -52,7 +52,7 @@ const getCreateEnvPR = async (pulls, REPOSITORY) => {
           title: SOURCE_BRANCH,
       },
     });
-    console.log(newPR, 'newly created PR')
+    // console.log(newPR, 'newly created PR')
 
     return newPR;
   } catch (e) {
@@ -65,7 +65,8 @@ const getCreateEnvPR = async (pulls, REPOSITORY) => {
 /**
  * Loop through the repositories you want to create PRs & generate diffs for
  */
-for (const REPOSITORY of REPOSITORIES) {  
+for (const REPOSITORY of REPOSITORIES) {
+  console.log(`...${REPOSITORY}`)
   // Check for open PRs for this repo
   const pulls = await octokit.request(`GET /repos/{owner}/{repo}/pulls`, {
     owner: ORGANIZATION,
@@ -97,7 +98,7 @@ for (const REPOSITORY of REPOSITORIES) {
   });
   
   if (!pull.data) {
-    console.log(envPR, REPOSITORY, 'No pull')
+    // console.log(envPR, REPOSITORY, 'No pull')
     continue;
   }
 
