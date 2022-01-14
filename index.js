@@ -10,6 +10,8 @@ const ORGANIZATION = env.get('ORGANIZATION').required().asString();
 const SOURCE_BRANCH = env.get('SOURCE_BRANCH').required().asString();
 const REPOSITORIES = env.get('REPOSITORIES').required().asJsonArray();
 
+const CREATE_PRS = true
+
 // Create a personal access token at https://github.com/settings/tokens/new?scopes=repo
 // Compare: https://docs.github.com/en/rest/reference/users#get-the-authenticated-user
 // https://docs.github.com/en/rest/reference/pulls
@@ -41,6 +43,10 @@ const getCreateEnvPR = async (pulls, REPOSITORY) => {
       return;
     }
 
+    if (!CREATE_PRS) {
+      return;
+    }
+
     // Create the PR
     const newPR = await axios({
       method: 'post',
@@ -52,21 +58,21 @@ const getCreateEnvPR = async (pulls, REPOSITORY) => {
           title: SOURCE_BRANCH,
       },
     });
-    // console.log(newPR, 'newly created PR')
+    console.log(newPR, 'newly created PR')
 
-    return newPR;
+    return newPR.data;
   } catch (e) {
     // If the PR fails then move to the next repo
     console.error(e);
     return;
   }
 }
+console.log(`processing...`)
 
 /**
  * Loop through the repositories you want to create PRs & generate diffs for
  */
 for (const REPOSITORY of REPOSITORIES) {
-  console.log(`...${REPOSITORY}`)
   // Check for open PRs for this repo
   const pulls = await octokit.request(`GET /repos/{owner}/{repo}/pulls`, {
     owner: ORGANIZATION,
