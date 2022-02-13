@@ -6,59 +6,40 @@ import dotenv from 'dotenv';
 dotenv.config()
 import env from 'env-var';
 
+// Create a personal access token at https://github.com/settings/tokens/new?scopes=repo
 const AUTH_KEY = env.get('AUTH_KEY').required().asString();
 const ORGANIZATION = env.get('ORGANIZATION').required().asString();
 const SOURCE_BRANCH = env.get('SOURCE_BRANCH').required().asString();
 const REPOSITORIES = env.get('REPOSITORIES').required().asJsonArray();
 const GIT_REVIEWER = env.get('GIT_REVIEWER').required().asString();
 
-// TODO: Make error resistant repositories aren't found on a certain source_branch
+// Create PRs if they don't already exist - set to false if looking at others work - avoid PRs being created by the wrong user
 const CREATE_PRS = false
+const GITHUB_PAGE_LIMIT = 50;
 
-// Create a personal access token at https://github.com/settings/tokens/new?scopes=repo
-// Compare: https://docs.github.com/en/rest/reference/users#get-the-authenticated-user
-// https://docs.github.com/en/rest/reference/pulls
 const octokit = new Octokit({ auth: AUTH_KEY });
 
-// TODO: Dry the recursion logic
-const getReviews = async (envPR, repo, reviews = [], page = 1) => {
-  const limit = 50;
-  const newReviews = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+/**
+ * Recursively paginate through the request
+ */
+export const getRecursively = async (endpoint, envPR, repo, items = [], page = 1) => {
+  const res = await octokit.request(endpoint, {
     owner: ORGANIZATION,
     repo,
     pull_number: envPR.number.toString(),
-    per_page: limit,
+    per_page: GITHUB_PAGE_LIMIT,
     page,
   });
 
-  if (newReviews.data.length === limit) {
-    return getReviews(envPR, repo, newReviews.data, page + 1);
+  if (res.data.length === GITHUB_PAGE_LIMIT) {
+    return getRecursively(endpoint, envPR, repo, res.data, page + 1);
   }
 
-  return [...reviews, ...newReviews.data];
-}
-
-const getCommits = async (envPR, repo, pulls = [], page = 1) => {
-  const limit = 50;
-  const pull = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/commits", {
-    owner: ORGANIZATION,
-    repo,
-    pull_number: envPR.number.toString(),
-    per_page: limit,
-    page,
-  });
-
-  if (pull.data.length === limit) {
-    return getCommits(envPR, repo, pull.data, page + 1);
-  }
-
-  return [...pulls, ...pull.data];
+  return [...items, ...res.data];
 }
 
 /**
  * Get an existing PR or create a new one if a diff exists
- * @param {*} pulls 
- * @param {*} REPOSITORY 
  */
 const getCreateEnvPR = async (pulls, REPOSITORY) => {
   const existingEnvPR = pulls.data.find(p => p.head.label === `${ORGANIZATION}:${SOURCE_BRANCH}`)
@@ -106,10 +87,8 @@ const getCreateEnvPR = async (pulls, REPOSITORY) => {
   }
 }
 
-console.log(`processing...`)
-
 /**
- * Loop through the repositories you want to create PRs & generate diffs for review
+ * Loop through the repositories you want to process
  * Intentionally using for (const...) for rate limiting
  */
 for (const REPOSITORY of REPOSITORIES) {
@@ -127,30 +106,30 @@ for (const REPOSITORY of REPOSITORIES) {
     continue
   }
       
-  // Wait for a a bit for rate limiting
+  // Wait - reduce rate limiting risk
   await new Promise(resolve => {
     setTimeout(() => {
       resolve()
-    }, 250)
+    }, 200)
   })
   
-  // The the pull request details for this environment
-  const pullCommits = await getCommits(envPR, REPOSITORY)
+  // Get all of the commits on the PR
+  const pullCommits = await getRecursively("GET /repos/{owner}/{repo}/pulls/{pull_number}/commits", envPR, REPOSITORY)
   
-  // Defensive... move on if not found
+  // Defensive... move on if none
   if (!pullCommits.length) {
     continue;
   }
 
-  // Wait - rate limiting
+  // Wait - reduce rate limiting risk
   await new Promise(resolve => {
     setTimeout(() => {
       resolve()
-    }, 250)
+    }, 200)
   })
   
   // Get all reviews for the PR
-  const reviews = await getReviews(envPR, REPOSITORY)
+  const reviews = await getRecursively("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", envPR, REPOSITORY)
   
   // Get all the existing approvals for the PR
   const approvals = reviews.filter(o => o.state === 'APPROVED');
@@ -162,23 +141,31 @@ for (const REPOSITORY of REPOSITORIES) {
   // Base repo url
   const repo = `https://github.com/${ORGANIZATION}/${REPOSITORY}`;
 
-  // TODO: Don't show this if the commits are equal
-  if (myReviews.length) {
-    const mostRecentReviewByMe = myReviews[myReviews.length - 1].commit_id;
-    console.log(chalk.blue(`${REPOSITORY}: Commits since my last review: ${repo}/pull/${envPR.number}/files/${mostRecentReviewByMe}..${mostRecentCommit.sha}`))
-  }
-
+  // TODO: Tidy this up a bit
+  // General approval status
   if (!approvals.length) {
     // If there are no approvals then link to the entire PR
     console.log(chalk.red(`${REPOSITORY}: No approvals: ${repo}/pull/${envPR.number}/files`))
   } else {
-    if (approvals[approvals.length - 1].commit_id === mostRecentCommit.sha) {
+    // Latest commit has been approved
+    if (approvals.length && approvals[ approvals.length - 1 ].commit_id === mostRecentCommit.sha) {
       console.log(chalk.green(`${REPOSITORY}: Approval upto date`))
     } else {
-      // If there are approvals, then link to the diff between the latest approval and the entire PR
-      console.log(chalk.yellow(`${REPOSITORY}: Approvals since latest: ${repo}/pull/${envPR.number}/files/${approvals[approvals.length - 1].commit_id}..${mostRecentCommit.sha}`))
+      // Link to diff between latest approval and latest commit
+      console.log(chalk.yellow(`${REPOSITORY}: Commits since latest approval: ${repo}/pull/${envPR.number}/files/${approvals[approvals.length - 1].commit_id}..${mostRecentCommit.sha}`))
     }
   }
 
+  // Personal review status
+  if (myReviews.length) {
+    const mostRecentReviewByMe = myReviews[ myReviews.length - 1 ].commit_id;
+    if (mostRecentCommit.sha !== mostRecentReviewByMe) {
+      console.log(chalk.blue(`${REPOSITORY}: Commits since my last review: ${repo}/pull/${envPR.number}/files/${mostRecentReviewByMe}..${mostRecentCommit.sha}`))
+    } else {
+      console.log(chalk.gray(`${REPOSITORY}: No commits since my last review`))
+    }
+  } else {
+    console.log(chalk.magenta(`${REPOSITORY}: No reviews by me: ${repo}/pull/${envPR.number}/files/${mostRecentReviewByMe}..${mostRecentCommit.sha}`))
+  }
   console.log(`\n`)
 }
